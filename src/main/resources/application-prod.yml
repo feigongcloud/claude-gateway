@@ -1,0 +1,18 @@
+server:
+  port: 8088
+logging:
+  level:
+    org.springframework.web.reactive.function.client.ExchangeFunctions: TRACE
+    reactor.netty.http.client: DEBUG
+gw:
+  upstreamBaseUrl: https://api.anthropic.com
+  anthropicVersion: 2023-06-01
+  upstreamApiKeys:
+    - "key1"
+    - "key2"
+  defaultRpm: 60
+  tenants:
+    - apiKey: demo-key
+      tenantId: demo-tenant
+      userId: demo-user
+      plan: basic
