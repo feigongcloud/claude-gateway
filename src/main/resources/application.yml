@@ -1,3 +1,66 @@
 spring:
   profiles:
     active: local
+
+  # R2DBC Reactive MySQL (defaults, override in profile)
+  r2dbc:
+    url: r2dbc:mysql://localhost:3306/claude_gateway
+    username: gateway
+    password: ${DB_PASSWORD:gateway}
+    pool:
+      initial-size: 5
+      max-size: 20
+      max-idle-time: 30m
+
+  # Redis for caching
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2s
+
+  # Flyway for database migrations
+  flyway:
+    enabled: true
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/claude_gateway
+    user: ${DB_USERNAME:gateway}
+    password: ${DB_PASSWORD:gateway}
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+management:
+  endpoint:
+    health:
+      show-details: always
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+# Gateway configuration
+gw:
+  upstreamBaseUrl: https://api.anthropic.com
+  anthropicVersion: 2023-06-01
+  defaultRpm: 60
+
+  # Authentication configuration
+  auth:
+    useYamlFallback: true    # Enable YAML tenant fallback (backward compatible)
+    useDatabase: false        # Enable database lookup (set true in prod)
+
+  # Encryption configuration for upstream keys
+  crypto:
+    masterKeyPath: ${MASTER_KEY_PATH:/etc/gw/master.key}
+    currentKeyVersion: 1
+
+  # Cache configuration
+  cache:
+    keyPrefix: "gw:"
+    apiKeyTtlSeconds: 300     # 5 minutes
+    quotaPolicyTtlSeconds: 60 # 1 minute
+
+  # Admin API configuration
+  admin:
+    apiKeyHeader: X-Admin-Api-Key
+    adminApiKeys: []          # Configure in profile or env var

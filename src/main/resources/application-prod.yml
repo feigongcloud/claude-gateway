@@ -1,18 +1,69 @@
 server:
   port: 8088
+
 logging:
   level:
-    org.springframework.web.reactive.function.client.ExchangeFunctions: TRACE
-    reactor.netty.http.client: DEBUG
+    org.springframework.web.reactive.function.client.ExchangeFunctions: INFO
+    reactor.netty.http.client: INFO
+    com.vcc.gateway: INFO
+
+spring:
+  # Production R2DBC MySQL
+  r2dbc:
+    url: r2dbc:mysql://${DB_HOST}:${DB_PORT:3306}/${DB_NAME:claude_gateway}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    pool:
+      initial-size: 10
+      max-size: 50
+      max-idle-time: 10m
+
+  # Production Redis cluster
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD}
+      timeout: 2s
+      lettuce:
+        pool:
+          max-active: 50
+          max-idle: 10
+          min-idle: 5
+
+  # Flyway for production migrations
+  flyway:
+    enabled: true
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT:3306}/${DB_NAME:claude_gateway}
+    user: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+
 gw:
   upstreamBaseUrl: https://api.anthropic.com
   anthropicVersion: 2023-06-01
-  upstreamApiKeys:
-    - "key1"
-    - "key2"
   defaultRpm: 60
-  tenants:
-    - apiKey: demo-key
-      tenantId: demo-tenant
-      userId: demo-user
-      plan: basic
+
+  # Production: No YAML tenants, use database only
+  tenants: []
+  upstreamApiKeys: []
+
+  # Production auth config - database mode
+  auth:
+    useYamlFallback: false    # Disable YAML fallback
+    useDatabase: true          # Use database for tenant/key lookup
+
+  # Encryption for upstream keys
+  crypto:
+    masterKeyPath: ${MASTER_KEY_PATH:/etc/gw/master.key}
+    currentKeyVersion: ${MASTER_KEY_VERSION:1}
+
+  # Cache configuration
+  cache:
+    keyPrefix: "gw:"
+    apiKeyTtlSeconds: 300
+    quotaPolicyTtlSeconds: 60
+
+  # Admin API (keys from environment/secrets)
+  admin:
+    apiKeyHeader: X-Admin-Api-Key
+    adminApiKeys: ${ADMIN_API_KEYS:}
