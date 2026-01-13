@@ -95,7 +95,14 @@ public class TenantService {
      * Reactive tenant resolution from HttpHeaders.
      */
     public Mono<TenantContext> resolveReactive(HttpHeaders headers) {
-        return resolveReactive(headers.getFirst(HttpHeaders.AUTHORIZATION));
+        String authorizationHeader = headers.getFirst(HttpHeaders.AUTHORIZATION);
+        if (authorizationHeader == null || authorizationHeader.isBlank()) {
+            String apiKeyHeader = headers.getFirst("x-api-key");
+            if (apiKeyHeader != null && !apiKeyHeader.isBlank()) {
+                return resolveReactiveApiKey(apiKeyHeader);
+            }
+        }
+        return resolveReactive(authorizationHeader);
     }
 
     /**
@@ -119,6 +126,14 @@ public class TenantService {
                     HttpStatus.UNAUTHORIZED, "Missing API key"));
         }
 
+        return resolveReactiveApiKey(apiKey);
+    }
+
+    /**
+     * Reactive tenant resolution from raw API key.
+     * Supports Authorization Bearer and x-api-key header flows.
+     */
+    private Mono<TenantContext> resolveReactiveApiKey(String apiKey) {
         // Step 1: Check YAML fallback first (fast path)
         if (useYamlFallback) {
             TenantContext yamlTenant = yamlTenants.get(apiKey);
@@ -238,7 +253,14 @@ public class TenantService {
      */
     @Deprecated
     public TenantContext resolve(HttpHeaders headers) {
-        return resolve(headers.getFirst(HttpHeaders.AUTHORIZATION));
+        String authorizationHeader = headers.getFirst(HttpHeaders.AUTHORIZATION);
+        if (authorizationHeader == null || authorizationHeader.isBlank()) {
+            String apiKeyHeader = headers.getFirst("x-api-key");
+            if (apiKeyHeader != null && !apiKeyHeader.isBlank()) {
+                return resolveApiKey(apiKeyHeader);
+            }
+        }
+        return resolve(authorizationHeader);
     }
 
     /**
@@ -266,5 +288,29 @@ public class TenantService {
         // For database mode, we need to block (not recommended)
         log.warn("Synchronous resolve() called with database enabled - this will block!");
         return resolveReactive(authorizationHeader).block();
+    }
+
+    /**
+     * Synchronous resolution from raw API key.
+     */
+    @Deprecated
+    private TenantContext resolveApiKey(String apiKey) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing API key");
+        }
+
+        if (useYamlFallback) {
+            TenantContext yamlTenant = yamlTenants.get(apiKey);
+            if (yamlTenant != null) {
+                return yamlTenant;
+            }
+        }
+
+        if (!useDatabase) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unknown API key");
+        }
+
+        log.warn("Synchronous resolveApiKey() called with database enabled - this will block!");
+        return lookupFromCacheOrDb(keyGeneratorService.hashApiKey(apiKey)).block();
     }
 }
