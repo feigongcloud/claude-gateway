@@ -39,7 +39,7 @@ public class GatewayController {
         this.objectMapper = objectMapper;
     }
 
-    @PostMapping(path = "/anthropic/v1/messages", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @PostMapping(path = "/v1/messages", consumes = MediaType.APPLICATION_JSON_VALUE)
     public Mono<Void> proxy(
             ServerHttpRequest request, ServerHttpResponse response, @RequestBody byte[] body) {
         String requestId = UUID.randomUUID().toString();

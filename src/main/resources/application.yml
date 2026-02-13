@@ -40,7 +40,7 @@ management:
 
 # Gateway configuration
 gw:
-  upstreamBaseUrl: https://api.anthropic.com
+  upstreamBaseUrl: https://subapi.aicoding.sh
   anthropicVersion: 2023-06-01
   defaultRpm: 60
 
