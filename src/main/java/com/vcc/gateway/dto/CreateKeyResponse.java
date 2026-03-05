@@ -1,6 +1,7 @@
 package com.vcc.gateway.dto;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 
 /**
  * Response DTO for API key creation.
@@ -14,7 +15,7 @@ public record CreateKeyResponse(
         String apiKey,        // Plaintext key - only returned on creation!
         String scopes,
         Instant expiresAt,
-        Instant createdAt,
+        LocalDateTime createdAt,
         String warning
 ) {
     /**
@@ -28,7 +29,7 @@ public record CreateKeyResponse(
             String plaintextKey,
             String scopes,
             Instant expiresAt,
-            Instant createdAt
+            LocalDateTime createdAt
     ) {
         return new CreateKeyResponse(
                 keyId,

@@ -20,6 +20,8 @@ import reactor.core.publisher.Mono;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.UUID;
 
 /**
@@ -29,6 +31,7 @@ import java.util.UUID;
 @Service
 public class ApiKeyService {
     private static final Logger log = LoggerFactory.getLogger(ApiKeyService.class);
+    private static final ZoneId BEIJING_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final TenantRepository tenantRepository;
     private final ApiKeyRepository apiKeyRepository;
@@ -49,6 +52,14 @@ public class ApiKeyService {
         this.keyGeneratorService = keyGeneratorService;
         this.cacheService = cacheService;
         this.defaultRpm = properties.getDefaultRpm();
+    }
+
+    /**
+     * Get current time in Beijing timezone as LocalDateTime.
+     * This ensures database timestamps match Beijing time (UTC+8).
+     */
+    private LocalDateTime nowBeijing() {
+        return LocalDateTime.now(BEIJING_ZONE);
     }
 
     // ==================== Tenant Operations ====================
@@ -72,8 +83,8 @@ public class ApiKeyService {
                     tenant.setName(request.name());
                     tenant.setPlan(request.effectivePlan());
                     tenant.setStatus("active");
-                    tenant.setCreatedAt(Instant.now());
-                    tenant.setUpdatedAt(Instant.now());
+                    tenant.setCreatedAt(nowBeijing());
+                    tenant.setUpdatedAt(nowBeijing());
 
                     // Create quota policy entity
                     QuotaPolicyEntity policy = new QuotaPolicyEntity();
@@ -82,8 +93,8 @@ public class ApiKeyService {
                     policy.setTpmLimit(request.tpmLimit());
                     policy.setMonthlyTokenCap(request.monthlyTokenCap());
                     policy.setBurstMultiplier(BigDecimal.valueOf(request.effectiveBurstMultiplier()));
-                    policy.setCreatedAt(Instant.now());
-                    policy.setUpdatedAt(Instant.now());
+                    policy.setCreatedAt(nowBeijing());
+                    policy.setUpdatedAt(nowBeijing());
 
                     // Save tenant and policy
                     return tenantRepository.save(tenant)
@@ -127,21 +138,38 @@ public class ApiKeyService {
                 .switchIfEmpty(Mono.error(new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "Tenant not found: " + tenantId)))
                 .flatMap(tenant -> {
-                    // Generate new key
-                    KeyGeneratorService.GeneratedKey generated = keyGeneratorService.generateApiKey();
+                    // Generate or use provided key
+                    String plaintext;
+                    String prefix;
+                    String hash;
+
+                    if (request.apiKey() != null && !request.apiKey().isBlank()) {
+                        // Use custom API key (from external system sync)
+                        plaintext = request.apiKey();
+                        prefix = keyGeneratorService.extractPrefix(plaintext);
+                        hash = keyGeneratorService.hashApiKey(plaintext);
+                        log.info("Using custom API key for tenant {} (prefix={})", tenantId, prefix);
+                    } else {
+                        // Generate new key
+                        KeyGeneratorService.GeneratedKey generated = keyGeneratorService.generateApiKey();
+                        plaintext = generated.plaintext();
+                        prefix = generated.prefix();
+                        hash = generated.hash();
+                        log.info("Generated new API key for tenant {} (prefix={})", tenantId, prefix);
+                    }
 
                     // Create entity
                     ApiKeyEntity entity = new ApiKeyEntity();
                     entity.setKeyId(UUID.randomUUID().toString());
                     entity.setTenantId(tenantId);
                     entity.setUserId(request.userId());
-                    entity.setKeyPrefix(generated.prefix());
-                    entity.setKeyHash(generated.hash());
+                    entity.setKeyPrefix(prefix);
+                    entity.setKeyHash(hash);
                     entity.setStatus("active");
                     entity.setScopes(request.effectiveScopes());
                     entity.setExpiresAt(request.expiresAt());
-                    entity.setCreatedAt(Instant.now());
-                    entity.setUpdatedAt(Instant.now());
+                    entity.setCreatedAt(nowBeijing());
+                    entity.setUpdatedAt(nowBeijing());
 
                     // Save and return with plaintext key
                     return apiKeyRepository.save(entity)
@@ -153,7 +181,7 @@ public class ApiKeyService {
                                         saved.getTenantId(),
                                         saved.getUserId(),
                                         saved.getKeyPrefix(),
-                                        generated.plaintext(),  // Only time we return this!
+                                        plaintext,  // Only time we return this!
                                         saved.getScopes(),
                                         saved.getExpiresAt(),
                                         saved.getCreatedAt()
@@ -208,6 +236,103 @@ public class ApiKeyService {
                 });
     }
 
+    /**
+     * Rotate an API key: revoke old key and create new key atomically.
+     * This is a common operation when users regenerate their API keys.
+     */
+    @Transactional
+    public Mono<RotateKeyResponse> rotateApiKey(String tenantId, RotateKeyRequest request) {
+        String userId = request.userId();
+        String oldApiKey = request.oldApiKey();
+        String newApiKey = request.newApiKey();
+
+        // Verify tenant exists first
+        return tenantRepository.findById(tenantId)
+                .switchIfEmpty(Mono.error(new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Tenant not found: " + tenantId)))
+                .then(Mono.defer(() -> {
+                    // Hash the old API key to find it in database
+                    String oldKeyHash = keyGeneratorService.hashApiKey(oldApiKey);
+
+                    // Find the old key by hash
+                    return apiKeyRepository.findByKeyHash(oldKeyHash)
+                            .switchIfEmpty(Mono.error(new ResponseStatusException(
+                                    HttpStatus.NOT_FOUND,
+                                    "Old API key not found or already revoked")))
+                            .flatMap(oldKeyEntity -> {
+                                // Verify ownership: key must belong to the specified tenant and user
+                                if (!oldKeyEntity.getTenantId().equals(tenantId)) {
+                                    return Mono.error(new ResponseStatusException(
+                                            HttpStatus.FORBIDDEN,
+                                            "Old API key does not belong to tenant: " + tenantId));
+                                }
+                                if (!oldKeyEntity.getUserId().equals(userId)) {
+                                    return Mono.error(new ResponseStatusException(
+                                            HttpStatus.FORBIDDEN,
+                                            "Old API key does not belong to user: " + userId));
+                                }
+                                if ("revoked".equals(oldKeyEntity.getStatus())) {
+                                    return Mono.error(new ResponseStatusException(
+                                            HttpStatus.BAD_REQUEST,
+                                            "Old API key is already revoked"));
+                                }
+
+                                // Prepare new key
+                                String newKeyPrefix = keyGeneratorService.extractPrefix(newApiKey);
+                                String newKeyHash = keyGeneratorService.hashApiKey(newApiKey);
+
+                                // Check if new key already exists
+                                return apiKeyRepository.existsByKeyHash(newKeyHash)
+                                        .flatMap(exists -> {
+                                            if (exists) {
+                                                return Mono.error(new ResponseStatusException(
+                                                        HttpStatus.CONFLICT,
+                                                        "New API key already exists"));
+                                            }
+
+                                            // Create new key entity
+                                            ApiKeyEntity newKeyEntity = new ApiKeyEntity();
+                                            newKeyEntity.setKeyId(UUID.randomUUID().toString());
+                                            newKeyEntity.setTenantId(tenantId);
+                                            newKeyEntity.setUserId(userId);
+                                            newKeyEntity.setKeyPrefix(newKeyPrefix);
+                                            newKeyEntity.setKeyHash(newKeyHash);
+                                            newKeyEntity.setStatus("active");
+                                            newKeyEntity.setScopes(request.effectiveScopes());
+                                            newKeyEntity.setExpiresAt(request.expiresAt());
+                                            newKeyEntity.setCreatedAt(nowBeijing());
+                                            newKeyEntity.setUpdatedAt(nowBeijing());
+
+                                            // Execute rotation atomically:
+                                            // 1. Revoke old key
+                                            // 2. Save new key
+                                            // 3. Invalidate old key cache
+                                            return apiKeyRepository.revokeByKeyId(oldKeyEntity.getKeyId())
+                                                    .then(apiKeyRepository.save(newKeyEntity))
+                                                    .flatMap(savedNewKey ->
+                                                            cacheService.invalidateApiKey(oldKeyHash)
+                                                                    .thenReturn(savedNewKey)
+                                                    )
+                                                    .map(savedNewKey -> {
+                                                        log.info("Rotated API key for tenant {} user {}: old_key={} -> new_key={}",
+                                                                tenantId, userId,
+                                                                oldKeyEntity.getKeyPrefix(), savedNewKey.getKeyPrefix());
+
+                                                        return RotateKeyResponse.success(
+                                                                oldKeyEntity.getKeyId(),
+                                                                oldKeyEntity.getKeyPrefix(),
+                                                                savedNewKey.getKeyId(),
+                                                                savedNewKey.getKeyPrefix(),
+                                                                tenantId,
+                                                                userId,
+                                                                nowBeijing()
+                                                        );
+                                                    });
+                                        });
+                            });
+                }));
+    }
+
     // ==================== Quota Policy Operations ====================
 
     /**
@@ -221,6 +346,9 @@ public class ApiKeyService {
                         HttpStatus.NOT_FOUND, "Tenant not found: " + tenantId)))
                 .then(quotaPolicyRepository.findByTenantId(tenantId))
                 .flatMap(existing -> {
+                    // Mark as existing entity (not new)
+                    existing.setNew(false);
+
                     // Apply updates
                     if (request.rpmLimit() != null) {
                         existing.setRpmLimit(request.rpmLimit());
@@ -234,7 +362,7 @@ public class ApiKeyService {
                     if (request.burstMultiplier() != null) {
                         existing.setBurstMultiplier(BigDecimal.valueOf(request.burstMultiplier()));
                     }
-                    existing.setUpdatedAt(Instant.now());
+                    existing.setUpdatedAt(nowBeijing());
 
                     return quotaPolicyRepository.save(existing);
                 })
@@ -248,8 +376,8 @@ public class ApiKeyService {
                     newPolicy.setBurstMultiplier(request.burstMultiplier() != null
                             ? BigDecimal.valueOf(request.burstMultiplier())
                             : BigDecimal.valueOf(1.5));
-                    newPolicy.setCreatedAt(Instant.now());
-                    newPolicy.setUpdatedAt(Instant.now());
+                    newPolicy.setCreatedAt(nowBeijing());
+                    newPolicy.setUpdatedAt(nowBeijing());
 
                     return quotaPolicyRepository.save(newPolicy);
                 }))
@@ -274,6 +402,6 @@ public class ApiKeyService {
             String status,
             String scopes,
             Instant expiresAt,
-            Instant createdAt
+            LocalDateTime createdAt
     ) {}
 }

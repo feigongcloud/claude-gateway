@@ -1,6 +1,7 @@
 package com.vcc.gateway.service;
 
 import com.vcc.gateway.config.GwProperties;
+import com.vcc.gateway.model.UsageContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.buffer.DataBuffer;
@@ -10,10 +11,12 @@ import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.BodyInserters;
+import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Set;
@@ -25,8 +28,10 @@ public class UpstreamClient {
     private final WebClient webClient;
     private final GwProperties properties;
     private final KeyPool keyPool;
+    private final UsageTracker usageTracker;
 
-    public UpstreamClient(WebClient.Builder builder, GwProperties properties, KeyPool keyPool) {
+    public UpstreamClient(WebClient.Builder builder, GwProperties properties, KeyPool keyPool,
+                          UsageTracker usageTracker) {
         // Disable connection pooling to avoid stale connections
         reactor.netty.http.client.HttpClient httpClient = reactor.netty.http.client.HttpClient.create()
                 .keepAlive(false);
@@ -37,17 +42,22 @@ public class UpstreamClient {
                 .build();
         this.properties = properties;
         this.keyPool = keyPool;
+        this.usageTracker = usageTracker;
         log.info("UpstreamClient initialized with baseUrl={}", properties.getUpstreamBaseUrl());
     }
 
     /**
      * Forward request to upstream and write response directly to ServerHttpResponse.
-     * This ensures the body stream is consumed within the exchange context.
+     * Extracts usage data for tracking without blocking the response stream.
      */
-    public Mono<Void> forwardAndWrite(byte[] body, boolean stream, ServerHttpResponse response) {
+    public Mono<Void> forwardAndWrite(byte[] body, boolean stream, ServerHttpResponse response,
+                                       UsageContext usageContext) {
         String apiKey = keyPool.nextKey();
-        log.debug("Using API key: {}... (length={})",
-                apiKey.length() > 10 ? apiKey.substring(0, 10) : "SHORT", apiKey.length());
+        String upstreamKeyId = maskKeyForId(apiKey);
+        usageContext.setUpstreamKeyId(upstreamKeyId);
+
+        log.info("[UPSTREAM] forwardAndWrite called: requestId={}, stream={}",
+                usageContext.getRequestId(), stream);
 
         return webClient
                 .post()
@@ -61,43 +71,154 @@ public class UpstreamClient {
                     HttpStatusCode status = clientResponse.statusCode();
                     HttpHeaders headers = clientResponse.headers().asHttpHeaders();
 
+                    // Capture status code for usage tracking
+                    usageContext.setStatusCode(status.value());
+
                     // Set response status
                     response.setStatusCode(status);
 
-                    HttpHeaders out=response.getHeaders();
+                    HttpHeaders out = response.getHeaders();
 
-                    // Copy headers (except transfer-encoding)
+                    // Copy headers (except hop-by-hop)
                     headers.forEach((name, values) -> {
-//                        if (!HttpHeaders.TRANSFER_ENCODING.equalsIgnoreCase(name)) {
-//                            response.getHeaders().addAll(name, values);
-//                        }
-
-                        if(isHopByHop(name)) return;
-                        out.put(name,new ArrayList<>(values));
+                        if (isHopByHop(name)) return;
+                        out.put(name, new ArrayList<>(values));
                     });
 
                     if (stream) {
+                        log.info("[UPSTREAM] Handling STREAMING response: requestId={}",
+                                usageContext.getRequestId());
                         response.getHeaders().set(HttpHeaders.CONTENT_TYPE, MediaType.TEXT_EVENT_STREAM_VALUE);
                         response.getHeaders().set(HttpHeaders.CACHE_CONTROL, "no-cache");
                         response.getHeaders().set("X-Accel-Buffering", "no");
 
-
-                    }
-
-                    // Get body flux and write to response within this context
-                    Flux<DataBuffer> bodyFlux = clientResponse.bodyToFlux(DataBuffer.class)
-                            .doOnNext(buf -> log.trace("Received {} bytes", buf.readableByteCount()))
-                            .doOnComplete(() -> log.debug("Upstream body completed"))
-                            .doOnError(e -> log.error("Upstream body error: {}", e.getMessage()));
-
-                    if (stream) {
-                        // Streaming: flush each chunk immediately
-                        return response.writeAndFlushWith(bodyFlux.map(Mono::just));
+                        // Streaming: side-tap SSE events for usage extraction
+                        return handleStreamingResponse(clientResponse, response, usageContext);
                     } else {
-                        // Non-streaming: write all at once
-                        return response.writeWith(bodyFlux);
+                        log.info("[UPSTREAM] Handling NON-STREAMING response: requestId={}, status={}",
+                                usageContext.getRequestId(), status.value());
+                        // Non-streaming: intercept body for usage extraction
+                        return handleNonStreamingResponse(clientResponse, response, usageContext);
                     }
-                });
+                })
+                .doOnSubscribe(s -> log.info("[UPSTREAM] Request subscribed: requestId={}",
+                        usageContext.getRequestId()))
+                .doOnSuccess(v -> log.info("[UPSTREAM] ✓ forwardAndWrite COMPLETED: requestId={}",
+                        usageContext.getRequestId()))
+                .doOnError(e -> log.error("[UPSTREAM] ✗ forwardAndWrite ERROR: requestId={}, error={}",
+                        usageContext.getRequestId(), e.getMessage(), e))
+                .doFinally(signal -> log.info("[UPSTREAM] forwardAndWrite FINALLY: requestId={}, signal={}",
+                        usageContext.getRequestId(), signal));
+    }
+
+    /**
+     * Handle non-streaming response: collect body, extract usage, then write to client.
+     */
+    private Mono<Void> handleNonStreamingResponse(ClientResponse clientResponse,
+                                                   ServerHttpResponse response,
+                                                   UsageContext usageContext) {
+        return clientResponse.bodyToMono(byte[].class)
+            .doOnNext(bodyBytes -> log.info("[UPSTREAM] Received body: requestId={}, size={} bytes",
+                    usageContext.getRequestId(), bodyBytes.length))
+            .flatMap(bodyBytes -> {
+                // Extract usage from response body
+                UsageTracker.UsageData usage = usageTracker.parseNonStreamingUsage(bodyBytes);
+                if (usage != null) {
+                    log.info("[UPSTREAM] Extracted usage: requestId={}, msgId={}, input={}, output={}, total={}",
+                            usageContext.getRequestId(), usage.msgId(), usage.inputTokens(), usage.outputTokens(),
+                            usage.totalTokens());
+                    usageContext.addInputTokens(usage.inputTokens());
+                    usageContext.addOutputTokens(usage.outputTokens());
+                    usageContext.setCacheCreationInputTokens(usage.cacheCreationInputTokens());
+                    usageContext.setCacheReadInputTokens(usage.cacheReadInputTokens());
+                    usageContext.setRawUsageJson(usage.rawJson());
+                    usageContext.setMsgId(usage.msgId());
+                } else {
+                    log.warn("[UPSTREAM] No usage data found in response: requestId={}",
+                            usageContext.getRequestId());
+                }
+
+                // Write body to client
+                DataBuffer buffer = response.bufferFactory().wrap(bodyBytes);
+                return response.writeWith(Mono.just(buffer))
+                        .doOnSuccess(v -> log.info("[UPSTREAM] ✓ Response written to client: requestId={}",
+                                usageContext.getRequestId()));
+            });
+    }
+
+    /**
+     * Handle streaming response: side-tap SSE events while passing through to client.
+     * Uses a tee pattern to extract usage without blocking.
+     */
+    private Mono<Void> handleStreamingResponse(ClientResponse clientResponse,
+                                                ServerHttpResponse response,
+                                                UsageContext usageContext) {
+        // SSE line buffer for parsing (not thread-safe, but only accessed in single stream)
+        StringBuilder lineBuffer = new StringBuilder();
+
+        Flux<DataBuffer> bodyFlux = clientResponse.bodyToFlux(DataBuffer.class)
+            .doOnNext(buf -> {
+                // Side-tap: extract text and look for usage events
+                byte[] bytes = new byte[buf.readableByteCount()];
+                buf.read(bytes);
+                buf.readPosition(0);  // Reset position for downstream
+
+                String chunk = new String(bytes, StandardCharsets.UTF_8);
+                extractUsageFromSseChunk(chunk, lineBuffer, usageContext);
+            })
+            .doOnComplete(() -> log.debug("Upstream body completed"))
+            .doOnError(e -> log.error("Upstream body error: {}", e.getMessage()));
+
+        // Streaming: flush each chunk immediately
+        return response.writeAndFlushWith(bodyFlux.map(Mono::just));
+    }
+
+    /**
+     * Extract usage from SSE chunk, handling partial lines across chunks.
+     */
+    private void extractUsageFromSseChunk(String chunk, StringBuilder lineBuffer,
+                                           UsageContext usageContext) {
+        lineBuffer.append(chunk);
+        String content = lineBuffer.toString();
+
+        // Process complete lines
+        int lastNewline = content.lastIndexOf('\n');
+        if (lastNewline >= 0) {
+            String completeLines = content.substring(0, lastNewline);
+            lineBuffer.setLength(0);
+            lineBuffer.append(content.substring(lastNewline + 1));
+
+            for (String line : completeLines.split("\n")) {
+                String sseData = usageTracker.extractSseData(line);
+                if (sseData == null) continue;
+
+                // Try to parse message_start for input tokens and message ID
+                UsageTracker.UsageData startUsage = usageTracker.parseMessageStartUsage(sseData);
+                if (startUsage != null) {
+                    usageContext.addInputTokens(startUsage.inputTokens());
+                    usageContext.setCacheCreationInputTokens(startUsage.cacheCreationInputTokens());
+                    usageContext.setCacheReadInputTokens(startUsage.cacheReadInputTokens());
+                    usageContext.setMsgId(startUsage.msgId());
+                    log.trace("Extracted msgId={}, input_tokens={} from message_start",
+                        startUsage.msgId(), startUsage.inputTokens());
+                    continue;
+                }
+
+                // Try to parse message_delta for output tokens
+                UsageTracker.UsageData deltaUsage = usageTracker.parseMessageDeltaUsage(sseData);
+                if (deltaUsage != null) {
+                    usageContext.addOutputTokens(deltaUsage.outputTokens());
+                    usageContext.setRawUsageJson(deltaUsage.rawJson());
+                    log.trace("Extracted output_tokens={} from message_delta",
+                        deltaUsage.outputTokens());
+                }
+            }
+        }
+    }
+
+    private String maskKeyForId(String key) {
+        if (key == null || key.length() < 12) return "unknown";
+        return key.substring(0, 8) + "..." + key.substring(key.length() - 4);
     }
 
     private static final Set<String> HOP_BY_HOP = Set.of(

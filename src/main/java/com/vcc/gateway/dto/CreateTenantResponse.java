@@ -3,7 +3,7 @@ package com.vcc.gateway.dto;
 import com.vcc.gateway.entity.TenantEntity;
 import com.vcc.gateway.model.QuotaPolicy;
 
-import java.time.Instant;
+import java.time.LocalDateTime;
 
 /**
  * Response DTO for tenant creation.
@@ -14,7 +14,7 @@ public record CreateTenantResponse(
         String plan,
         String status,
         QuotaPolicyInfo quotaPolicy,
-        Instant createdAt
+        LocalDateTime createdAt
 ) {
     /**
      * Create response from entity and policy.

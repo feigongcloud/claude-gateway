@@ -1,17 +1,22 @@
 package com.vcc.gateway.entity;
 
 import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.Transient;
+import org.springframework.data.domain.Persistable;
 import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
 import java.time.Instant;
 
 @Table("upstream_key_secret")
-public class UpstreamKeySecretEntity {
+public class UpstreamKeySecretEntity implements Persistable<String> {
 
     @Id
     @Column("upstream_key_id")
     private String upstreamKeyId;
+
+    @Transient
+    private boolean isNew = true;
 
     @Column("provider")
     private String provider;
@@ -41,6 +46,20 @@ public class UpstreamKeySecretEntity {
     private Instant updatedAt;
 
     public UpstreamKeySecretEntity() {
+    }
+
+    @Override
+    public String getId() {
+        return upstreamKeyId;
+    }
+
+    @Override
+    public boolean isNew() {
+        return isNew;
+    }
+
+    public void setNew(boolean isNew) {
+        this.isNew = isNew;
     }
 
     public String getUpstreamKeyId() {

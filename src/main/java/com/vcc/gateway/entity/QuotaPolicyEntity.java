@@ -1,14 +1,17 @@
 package com.vcc.gateway.entity;
 
 import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.Transient;
+import org.springframework.data.domain.Persistable;
 import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.time.Instant;
 
 @Table("quota_policy")
-public class QuotaPolicyEntity {
+public class QuotaPolicyEntity implements Persistable<String> {
 
     @Id
     @Column("tenant_id")
@@ -27,10 +30,13 @@ public class QuotaPolicyEntity {
     private BigDecimal burstMultiplier;
 
     @Column("created_at")
-    private Instant createdAt;
+    private LocalDateTime createdAt;
 
     @Column("updated_at")
-    private Instant updatedAt;
+    private LocalDateTime updatedAt;
+
+    @Transient
+    private boolean isNew = true;
 
     public QuotaPolicyEntity() {
     }
@@ -75,19 +81,33 @@ public class QuotaPolicyEntity {
         this.burstMultiplier = burstMultiplier;
     }
 
-    public Instant getCreatedAt() {
+    public LocalDateTime getCreatedAt() {
         return createdAt;
     }
 
-    public void setCreatedAt(Instant createdAt) {
+    public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
     }
 
-    public Instant getUpdatedAt() {
+    public LocalDateTime getUpdatedAt() {
         return updatedAt;
     }
 
-    public void setUpdatedAt(Instant updatedAt) {
+    public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    @Override
+    public String getId() {
+        return tenantId;
+    }
+
+    @Override
+    public boolean isNew() {
+        return isNew;
+    }
+
+    public void setNew(boolean isNew) {
+        this.isNew = isNew;
     }
 }

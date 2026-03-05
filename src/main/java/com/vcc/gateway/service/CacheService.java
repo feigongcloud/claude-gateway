@@ -56,9 +56,15 @@ public class CacheService {
     public Mono<ApiKeyInfo> getApiKeyInfo(String keyHash) {
         String cacheKey = keyPrefix + "apikey:" + keyHash;
         return redisTemplate.opsForValue().get(cacheKey)
+                .timeout(Duration.ofSeconds(2))
                 .flatMap(json -> deserialize(json, ApiKeyInfo.class))
                 .doOnNext(info -> log.debug("Cache hit for API key: {}", maskHash(keyHash)))
-                .doOnSubscribe(s -> log.debug("Checking cache for API key: {}", maskHash(keyHash)));
+                .doOnSubscribe(s -> log.debug("Checking cache for API key: {}", maskHash(keyHash)))
+                .onErrorResume(e -> {
+                    log.warn("Cache lookup failed for API key ({}): {}",
+                            maskHash(keyHash), e.getMessage());
+                    return Mono.empty();  // Fallback to database on cache error
+                });
     }
 
     /**
@@ -72,9 +78,11 @@ public class CacheService {
         String cacheKey = keyPrefix + "apikey:" + keyHash;
         return serialize(info)
                 .flatMap(json -> redisTemplate.opsForValue().set(cacheKey, json, apiKeyTtl))
+                .timeout(Duration.ofSeconds(2))
                 .doOnSuccess(result -> log.debug("Cached API key info: {}", maskHash(keyHash)))
                 .onErrorResume(e -> {
-                    log.warn("Failed to cache API key info: {}", e.getMessage());
+                    log.warn("Failed to cache API key info ({}): {}",
+                            maskHash(keyHash), e.getMessage());
                     return Mono.just(false);
                 });
     }
@@ -88,8 +96,14 @@ public class CacheService {
     public Mono<Long> invalidateApiKey(String keyHash) {
         String cacheKey = keyPrefix + "apikey:" + keyHash;
         return redisTemplate.delete(cacheKey)
+                .timeout(Duration.ofSeconds(2))
                 .doOnSuccess(count -> log.debug("Invalidated API key cache: {} (deleted={})",
-                        maskHash(keyHash), count));
+                        maskHash(keyHash), count))
+                .onErrorResume(e -> {
+                    log.warn("Failed to invalidate API key cache ({}): {}",
+                            maskHash(keyHash), e.getMessage());
+                    return Mono.just(0L);
+                });
     }
 
     // ==================== Quota Policy Cache ====================
@@ -103,8 +117,14 @@ public class CacheService {
     public Mono<QuotaPolicy> getQuotaPolicy(String tenantId) {
         String cacheKey = keyPrefix + "quota:" + tenantId;
         return redisTemplate.opsForValue().get(cacheKey)
+                .timeout(Duration.ofSeconds(2))
                 .flatMap(json -> deserialize(json, QuotaPolicy.class))
-                .doOnNext(policy -> log.debug("Cache hit for quota policy: {}", tenantId));
+                .doOnNext(policy -> log.debug("Cache hit for quota policy: {}", tenantId))
+                .onErrorResume(e -> {
+                    log.warn("Cache lookup failed for quota policy ({}): {}",
+                            tenantId, e.getMessage());
+                    return Mono.empty();  // Fallback to database on cache error
+                });
     }
 
     /**
@@ -118,9 +138,11 @@ public class CacheService {
         String cacheKey = keyPrefix + "quota:" + tenantId;
         return serialize(policy)
                 .flatMap(json -> redisTemplate.opsForValue().set(cacheKey, json, quotaPolicyTtl))
+                .timeout(Duration.ofSeconds(2))
                 .doOnSuccess(result -> log.debug("Cached quota policy: {}", tenantId))
                 .onErrorResume(e -> {
-                    log.warn("Failed to cache quota policy: {}", e.getMessage());
+                    log.warn("Failed to cache quota policy ({}): {}",
+                            tenantId, e.getMessage());
                     return Mono.just(false);
                 });
     }
@@ -134,8 +156,14 @@ public class CacheService {
     public Mono<Long> invalidateQuotaPolicy(String tenantId) {
         String cacheKey = keyPrefix + "quota:" + tenantId;
         return redisTemplate.delete(cacheKey)
+                .timeout(Duration.ofSeconds(2))
                 .doOnSuccess(count -> log.debug("Invalidated quota policy cache: {} (deleted={})",
-                        tenantId, count));
+                        tenantId, count))
+                .onErrorResume(e -> {
+                    log.warn("Failed to invalidate quota policy cache ({}): {}",
+                            tenantId, e.getMessage());
+                    return Mono.just(0L);
+                });
     }
 
     // ==================== Helper Methods ====================

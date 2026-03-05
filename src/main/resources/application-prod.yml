@@ -1,18 +1,19 @@
 server:
-  port: 8088
+  port: 8098
 
 logging:
   level:
     org.springframework.web.reactive.function.client.ExchangeFunctions: INFO
     reactor.netty.http.client: INFO
     com.vcc.gateway: INFO
+    com.vcc.gateway.service.UsageTracker: INFO
 
 spring:
   # Production R2DBC MySQL
   r2dbc:
-    url: r2dbc:mysql://${DB_HOST}:${DB_PORT:3306}/${DB_NAME:claude_gateway}
-    username: ${DB_USERNAME}
-    password: ${DB_PASSWORD}
+    url: r2dbc:mysql://${DB_HOST:115.120.197.161}:${DB_PORT:65000}/${DB_NAME:claude}?connectionTimeZone=UTC
+    username: ${DB_USERNAME:vdnclaude}
+    password: ${DB_PASSWORD:vdnclouD2018!}
     pool:
       initial-size: 10
       max-size: 50
@@ -21,9 +22,9 @@ spring:
   # Production Redis cluster
   data:
     redis:
-      host: ${REDIS_HOST}
-      port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD}
+      host: ${REDIS_HOST:124.70.148.19}
+      port: ${REDIS_PORT:56379}
+      password: ${REDIS_PASSWORD:sjj@Pwdmima}
       timeout: 2s
       lettuce:
         pool:
@@ -33,13 +34,14 @@ spring:
 
   # Flyway for production migrations
   flyway:
-    enabled: true
-    url: jdbc:mysql://${DB_HOST}:${DB_PORT:3306}/${DB_NAME:claude_gateway}
-    user: ${DB_USERNAME}
-    password: ${DB_PASSWORD}
+    enabled: false
+    url: jdbc:mysql://${DB_HOST:115.120.197.161}:${DB_PORT:65000}/${DB_NAME:claude}
+    user: ${DB_USERNAME:vdnclaude}
+    password: ${DB_PASSWORD:vdnclouD2018!}
+    baseline-on-migrate: true
 
 gw:
-  upstreamBaseUrl: https://api.anthropic.com
+  upstreamBaseUrl: https://subapi.aicoding.sh
   anthropicVersion: 2023-06-01
   defaultRpm: 60
 
@@ -54,7 +56,7 @@ gw:
 
   # Encryption for upstream keys
   crypto:
-    masterKeyPath: ${MASTER_KEY_PATH:/etc/gw/master.key}
+    masterKeyPath: ${MASTER_KEY_PATH:./config/master.key}
     currentKeyVersion: ${MASTER_KEY_VERSION:1}
 
   # Cache configuration
@@ -66,4 +68,4 @@ gw:
   # Admin API (keys from environment/secrets)
   admin:
     apiKeyHeader: X-Admin-Api-Key
-    adminApiKeys: ${ADMIN_API_KEYS:}
+    adminApiKeys: ${ADMIN_API_KEYS:local-admin-key-12345}

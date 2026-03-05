@@ -1,9 +1,11 @@
 package com.vcc.gateway.web;
 
 import com.vcc.gateway.model.TenantContext;
+import com.vcc.gateway.model.UsageContext;
 import com.vcc.gateway.service.RateLimiter;
 import com.vcc.gateway.service.TenantService;
 import com.vcc.gateway.service.UpstreamClient;
+import com.vcc.gateway.service.UsageTracker;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
@@ -29,13 +31,19 @@ public class GatewayController {
     private final TenantService tenantService;
     private final RateLimiter rateLimiter;
     private final UpstreamClient upstreamClient;
+    private final UsageTracker usageTracker;
     private final ObjectMapper objectMapper;
 
     public GatewayController(
-            TenantService tenantService, RateLimiter rateLimiter, UpstreamClient upstreamClient, ObjectMapper objectMapper) {
+            TenantService tenantService,
+            RateLimiter rateLimiter,
+            UpstreamClient upstreamClient,
+            UsageTracker usageTracker,
+            ObjectMapper objectMapper) {
         this.tenantService = tenantService;
         this.rateLimiter = rateLimiter;
         this.upstreamClient = upstreamClient;
+        this.usageTracker = usageTracker;
         this.objectMapper = objectMapper;
     }
 
@@ -44,8 +52,12 @@ public class GatewayController {
             ServerHttpRequest request, ServerHttpResponse response, @RequestBody byte[] body) {
         String requestId = UUID.randomUUID().toString();
         boolean stream = isStream(body);
+        String model = extractModel(body);
 
-        log.debug("requestId={} stream={} starting proxy", requestId, stream);
+        log.debug("requestId={} stream={} model={} starting proxy", requestId, stream, model);
+
+        // Create usage context for tracking
+        UsageContext usageContext = new UsageContext(requestId, model, stream);
 
         // Use reactive tenant resolution for non-blocking auth
         return tenantService.resolveReactive(request.getHeaders())
@@ -57,13 +69,23 @@ public class GatewayController {
                     }
 
                     // Forward to upstream and write response directly
-                    return upstreamClient.forwardAndWrite(body, stream, response)
-                            .doOnTerminate(() ->
-                                    log.info("requestId={} tenantId={} stream={} status={}",
-                                            requestId,
-                                            tenant.getTenantId(),
-                                            stream,
-                                            response.getStatusCode() != null ? response.getStatusCode().value() : "n/a"))
+                    return upstreamClient.forwardAndWrite(body, stream, response, usageContext)
+                            .doFinally(signal -> {
+                                log.info("=== [GW] doFinally called for requestId={}, signal={}", requestId, signal);
+                                log.info("[GW] About to call usageTracker.logAsync - tenant={}, usageContext.tokens={}, usageContext.status={}",
+                                        tenant.getTenantId(), usageContext.getTotalTokens(), usageContext.getStatusCode());
+
+                                // Log usage async (fire and forget)
+                                usageTracker.logAsync(tenant, usageContext);
+
+                                log.info("[GW] requestId={} tenantId={} stream={} status={} tokens={} duration_ms={}",
+                                        requestId,
+                                        tenant.getTenantId(),
+                                        stream,
+                                        response.getStatusCode() != null ? response.getStatusCode().value() : "n/a",
+                                        usageContext.getTotalTokens(),
+                                        usageContext.getDurationMs());
+                            })
                             .contextWrite(ctx -> ctx.put(TenantContextKeys.TENANT_CTX, tenant));
                 });
     }
@@ -75,6 +97,16 @@ public class GatewayController {
             return streamNode != null && streamNode.isBoolean() && streamNode.booleanValue();
         } catch (IOException ex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid JSON body", ex);
+        }
+    }
+
+    private String extractModel(byte[] body) {
+        try {
+            JsonNode root = objectMapper.readTree(body);
+            JsonNode modelNode = root.get("model");
+            return modelNode != null ? modelNode.asText("unknown") : "unknown";
+        } catch (IOException ex) {
+            return "unknown";
         }
     }
 

@@ -1,7 +1,10 @@
 package com.vcc.gateway.web;
 
+import com.vcc.gateway.crypto.AesGcmCryptoService;
 import com.vcc.gateway.dto.*;
+import com.vcc.gateway.entity.UpstreamKeySecretEntity;
 import com.vcc.gateway.model.QuotaPolicy;
+import com.vcc.gateway.repository.UpstreamKeySecretRepository;
 import com.vcc.gateway.service.ApiKeyService;
 import com.vcc.gateway.service.AuditService;
 import com.vcc.gateway.service.KeyPool;
@@ -11,13 +14,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.net.InetSocketAddress;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Admin API controller for tenant and key management.
@@ -33,13 +39,19 @@ public class AdminController {
     private final ApiKeyService apiKeyService;
     private final AuditService auditService;
     private final KeyPool keyPool;
+    private final AesGcmCryptoService cryptoService;
+    private final UpstreamKeySecretRepository upstreamKeyRepository;
 
     public AdminController(ApiKeyService apiKeyService,
                            AuditService auditService,
-                           KeyPool keyPool) {
+                           KeyPool keyPool,
+                           AesGcmCryptoService cryptoService,
+                           UpstreamKeySecretRepository upstreamKeyRepository) {
         this.apiKeyService = apiKeyService;
         this.auditService = auditService;
         this.keyPool = keyPool;
+        this.cryptoService = cryptoService;
+        this.upstreamKeyRepository = upstreamKeyRepository;
     }
 
     // ==================== Tenant Endpoints ====================
@@ -147,6 +159,47 @@ public class AdminController {
                 .doOnSuccess(r -> log.info("Revoked API key {} by {}", keyId, actor));
     }
 
+    /**
+     * Rotate an API key (revoke old + create new atomically).
+     * POST /admin/tenants/{tenantId}/keys/rotate
+     *
+     * Use this when downstream customer regenerates their API key.
+     * This atomically revokes the old key and creates the new key.
+     */
+    @PostMapping("/tenants/{tenantId}/keys/rotate")
+    public Mono<ResponseEntity<RotateKeyResponse>> rotateApiKey(
+            @PathVariable String tenantId,
+            @Valid @RequestBody RotateKeyRequest request,
+            ServerWebExchange exchange
+    ) {
+        String actor = getAdminActor(exchange);
+        String clientIp = getClientIp(exchange);
+
+        return apiKeyService.rotateApiKey(tenantId, request)
+                .flatMap(response -> {
+                    // Log both revocation and creation for audit trail
+                    return auditService.logKeyRevoked(
+                                    actor,
+                                    response.oldKeyId(),
+                                    response.tenantId(),
+                                    response.oldKeyPrefix(),
+                                    clientIp
+                            )
+                            .then(auditService.logKeyCreated(
+                                    actor,
+                                    response.tenantId(),
+                                    response.newKeyId(),
+                                    response.newKeyPrefix(),
+                                    response.userId(),
+                                    clientIp
+                            ))
+                            .thenReturn(response);
+                })
+                .map(ResponseEntity::ok)
+                .doOnSuccess(r -> log.info("Rotated API key for tenant {} user {} by {}",
+                        tenantId, request.userId(), actor));
+    }
+
     // ==================== Quota Policy Endpoints ====================
 
     /**
@@ -173,6 +226,117 @@ public class AdminController {
                 .map(ResponseEntity::ok)
                 .doOnSuccess(r -> log.info("Updated policy for tenant {} by {}",
                         tenantId, actor));
+    }
+
+    // ==================== Upstream Key Endpoints ====================
+
+    /**
+     * Add a new upstream API key (encrypted).
+     * POST /admin/keys/upstream
+     */
+    @PostMapping("/keys/upstream")
+    public Mono<ResponseEntity<AddUpstreamKeyResponse>> addUpstreamKey(
+            @Valid @RequestBody AddUpstreamKeyRequest request,
+            ServerWebExchange exchange
+    ) {
+        String actor = getAdminActor(exchange);
+        String clientIp = getClientIp(exchange);
+
+        if (!cryptoService.isEnabled()) {
+            return Mono.error(new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "Encryption not available - master key not configured"));
+        }
+
+        return Mono.fromCallable(() -> {
+            // Generate key ID
+            String keyId = "uk-" + UUID.randomUUID().toString().substring(0, 8);
+            String provider = request.effectiveProvider();
+            String apiKey = request.apiKey();
+
+            // Encrypt the API key
+            AesGcmCryptoService.EncryptedData encrypted = cryptoService.encrypt(apiKey, provider);
+
+            // Create entity
+            UpstreamKeySecretEntity entity = new UpstreamKeySecretEntity();
+            entity.setUpstreamKeyId(keyId);
+            entity.setProvider(provider);
+            entity.setStatus("active");
+            entity.setKeyVersion(encrypted.keyVersion());
+            entity.setIv(encrypted.iv());
+            entity.setCiphertext(encrypted.ciphertext());
+            entity.setTag(encrypted.tag());
+            entity.setAad(encrypted.aad());
+            entity.setCreatedAt(Instant.now());
+            entity.setUpdatedAt(Instant.now());
+
+            // Extract key prefix for response (first 10 chars)
+            String keyPrefix = apiKey.length() > 10 ? apiKey.substring(0, 10) + "..." : "***";
+
+            return new Object[]{entity, keyPrefix};
+        })
+        .flatMap(arr -> {
+            UpstreamKeySecretEntity entity = (UpstreamKeySecretEntity) arr[0];
+            String keyPrefix = (String) arr[1];
+
+            return upstreamKeyRepository.save(entity)
+                    .map(saved -> new AddUpstreamKeyResponse(
+                            saved.getUpstreamKeyId(),
+                            saved.getProvider(),
+                            saved.getStatus(),
+                            keyPrefix,
+                            saved.getCreatedAt()
+                    ));
+        })
+        .map(response -> ResponseEntity.status(HttpStatus.CREATED).body(response))
+        .doOnSuccess(r -> log.info("Added upstream key {} by {}",
+                r.getBody() != null ? r.getBody().keyId() : "unknown", actor));
+    }
+
+    /**
+     * List upstream keys (without secrets).
+     * GET /admin/keys/upstream
+     */
+    @GetMapping("/keys/upstream")
+    public Flux<Map<String, Object>> listUpstreamKeys() {
+        return upstreamKeyRepository.findAllActive()
+                .map(entity -> {
+                    Map<String, Object> info = new HashMap<>();
+                    info.put("keyId", entity.getUpstreamKeyId());
+                    info.put("provider", entity.getProvider());
+                    info.put("status", entity.getStatus());
+                    info.put("keyVersion", entity.getKeyVersion());
+                    info.put("createdAt", entity.getCreatedAt());
+                    return info;
+                });
+    }
+
+    /**
+     * Delete an upstream key.
+     * DELETE /admin/keys/upstream/{keyId}
+     */
+    @DeleteMapping("/keys/upstream/{keyId}")
+    public Mono<ResponseEntity<Map<String, Object>>> deleteUpstreamKey(
+            @PathVariable String keyId,
+            ServerWebExchange exchange
+    ) {
+        String actor = getAdminActor(exchange);
+
+        return upstreamKeyRepository.findById(keyId)
+                .switchIfEmpty(Mono.error(new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Upstream key not found: " + keyId)))
+                .flatMap(entity -> {
+                    entity.setNew(false);  // Mark as existing entity for proper delete
+                    return upstreamKeyRepository.delete(entity).thenReturn(entity);
+                })
+                .map(entity -> {
+                    Map<String, Object> result = new HashMap<>();
+                    result.put("status", "deleted");
+                    result.put("keyId", keyId);
+                    result.put("provider", entity.getProvider());
+                    return ResponseEntity.ok(result);
+                })
+                .doOnSuccess(r -> log.info("Deleted upstream key {} by {}", keyId, actor));
     }
 
     // ==================== Operations Endpoints ====================

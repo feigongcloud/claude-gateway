@@ -21,7 +21,14 @@ public record CreateKeyRequest(
         Instant expiresAt,
 
         @Size(max = 255, message = "Description must be at most 255 characters")
-        String description
+        String description,
+
+        /**
+         * Optional: Use a custom API key instead of generating one.
+         * If provided, this key will be used directly (useful for syncing from external systems).
+         */
+        @Size(min = 10, max = 100, message = "Custom API key must be 10-100 characters")
+        String apiKey
 ) {
     /**
      * Default scopes if not specified.

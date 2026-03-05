@@ -3,6 +3,7 @@ package com.vcc.gateway.model;
 import com.vcc.gateway.entity.ApiKeyEntity;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 
 /**
  * Lightweight value object for API key metadata.
@@ -15,7 +16,7 @@ public record ApiKeyInfo(
         String status,
         String scopes,
         Instant expiresAt,
-        Instant createdAt
+        LocalDateTime createdAt
 ) {
 
     /**

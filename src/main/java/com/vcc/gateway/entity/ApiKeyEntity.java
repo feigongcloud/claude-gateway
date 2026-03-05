@@ -1,13 +1,16 @@
 package com.vcc.gateway.entity;
 
 import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.Transient;
+import org.springframework.data.domain.Persistable;
 import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 
 @Table("api_key")
-public class ApiKeyEntity {
+public class ApiKeyEntity implements Persistable<String> {
 
     @Id
     @Column("key_id")
@@ -35,10 +38,13 @@ public class ApiKeyEntity {
     private Instant expiresAt;
 
     @Column("created_at")
-    private Instant createdAt;
+    private LocalDateTime createdAt;
 
     @Column("updated_at")
-    private Instant updatedAt;
+    private LocalDateTime updatedAt;
+
+    @Transient
+    private boolean isNew = true;
 
     public ApiKeyEntity() {
     }
@@ -107,19 +113,33 @@ public class ApiKeyEntity {
         this.expiresAt = expiresAt;
     }
 
-    public Instant getCreatedAt() {
+    public LocalDateTime getCreatedAt() {
         return createdAt;
     }
 
-    public void setCreatedAt(Instant createdAt) {
+    public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
     }
 
-    public Instant getUpdatedAt() {
+    public LocalDateTime getUpdatedAt() {
         return updatedAt;
     }
 
-    public void setUpdatedAt(Instant updatedAt) {
+    public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    @Override
+    public String getId() {
+        return keyId;
+    }
+
+    @Override
+    public boolean isNew() {
+        return isNew;
+    }
+
+    public void setNew(boolean isNew) {
+        this.isNew = isNew;
     }
 }
