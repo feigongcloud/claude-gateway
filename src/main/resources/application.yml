@@ -1,4 +1,8 @@
 spring:
+  # Codec configuration - increase buffer size to handle large requests/responses
+  codec:
+    max-in-memory-size: 10MB  # Fixes: 500 Exceeded limit on max bytes to buffer : 262144
+
   profiles:
     active: prod
 

@@ -26,6 +26,8 @@ public class UsageContext {
     private final AtomicReference<String> rawUsageJson = new AtomicReference<>();
     private final AtomicReference<String> errorCode = new AtomicReference<>();
     private final AtomicReference<String> msgId = new AtomicReference<>();
+    private final AtomicReference<Long> reserveTransactionId = new AtomicReference<>();
+    private final AtomicReference<java.math.BigDecimal> reservedCost = new AtomicReference<>();
 
     public UsageContext(String requestId, String model, boolean stream) {
         this.requestId = requestId;
@@ -130,5 +132,21 @@ public class UsageContext {
 
     public String getMsgId() {
         return msgId.get();
+    }
+
+    public void setReserveTransactionId(Long id) {
+        reserveTransactionId.set(id);
+    }
+
+    public Long getReserveTransactionId() {
+        return reserveTransactionId.get();
+    }
+
+    public void setReservedCost(java.math.BigDecimal cost) {
+        reservedCost.set(cost);
+    }
+
+    public java.math.BigDecimal getReservedCost() {
+        return reservedCost.get();
     }
 }

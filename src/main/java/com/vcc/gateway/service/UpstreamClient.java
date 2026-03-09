@@ -12,6 +12,7 @@ import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -36,14 +37,21 @@ public class UpstreamClient {
         reactor.netty.http.client.HttpClient httpClient = reactor.netty.http.client.HttpClient.create()
                 .keepAlive(false);
 
+        // Configure larger buffer size for WebClient to handle large upstream responses
+        // Fixes: 500 Exceeded limit on max bytes to buffer : 262144
+        ExchangeStrategies strategies = ExchangeStrategies.builder()
+                .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(10 * 1024 * 1024)) // 10MB
+                .build();
+
         this.webClient = builder
                 .baseUrl(properties.getUpstreamBaseUrl())
                 .clientConnector(new org.springframework.http.client.reactive.ReactorClientHttpConnector(httpClient))
+                .exchangeStrategies(strategies)
                 .build();
         this.properties = properties;
         this.keyPool = keyPool;
         this.usageTracker = usageTracker;
-        log.info("UpstreamClient initialized with baseUrl={}", properties.getUpstreamBaseUrl());
+        log.info("UpstreamClient initialized with baseUrl={}, maxBufferSize=10MB", properties.getUpstreamBaseUrl());
     }
 
     /**

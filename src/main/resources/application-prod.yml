@@ -9,6 +9,10 @@ logging:
     com.vcc.gateway.service.UsageTracker: INFO
 
 spring:
+  # Codec configuration - larger buffer for production to handle large requests/responses
+  codec:
+    max-in-memory-size: 20MB  # Fixes: 500 Exceeded limit on max bytes to buffer : 262144
+
   # Production R2DBC MySQL
   r2dbc:
     url: r2dbc:mysql://${DB_HOST:115.120.197.161}:${DB_PORT:65000}/${DB_NAME:claude}?connectionTimeZone=UTC
