@@ -26,6 +26,7 @@ public class UsageContext {
     private final AtomicReference<String> rawUsageJson = new AtomicReference<>();
     private final AtomicReference<String> errorCode = new AtomicReference<>();
     private final AtomicReference<String> msgId = new AtomicReference<>();
+    private final AtomicReference<String> xtraceId = new AtomicReference<>();
     private final AtomicReference<Long> reserveTransactionId = new AtomicReference<>();
     private final AtomicReference<java.math.BigDecimal> reservedCost = new AtomicReference<>();
 
@@ -71,6 +72,14 @@ public class UsageContext {
 
     public void setMsgId(String id) {
         msgId.set(id);
+    }
+
+    public String getXtraceId() {
+        return xtraceId.get();
+    }
+
+    public void setXtraceId(String id) {
+        xtraceId.set(id);
     }
 
     public long getDurationMs() {

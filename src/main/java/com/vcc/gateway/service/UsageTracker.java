@@ -251,6 +251,7 @@ public class UsageTracker {
         UsageEventEntity entity = new UsageEventEntity();
         entity.setRequestId(usage.getRequestId());
         entity.setMsgId(usage.getMsgId());
+        entity.setXtraceId(usage.getXtraceId());
         entity.setTenantId(tenant.getTenantId());
         entity.setUserId(tenant.getUserId());
         entity.setModel(usage.getModel());

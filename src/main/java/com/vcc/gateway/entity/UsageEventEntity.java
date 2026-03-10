@@ -20,6 +20,9 @@ public class UsageEventEntity {
     @Column("msg_id")
     private String msgId;
 
+    @Column("xtrace_id")
+    private String xtraceId;
+
     @Column("tenant_id")
     private String tenantId;
 
@@ -84,6 +87,14 @@ public class UsageEventEntity {
 
     public void setMsgId(String msgId) {
         this.msgId = msgId;
+    }
+
+    public String getXtraceId() {
+        return xtraceId;
+    }
+
+    public void setXtraceId(String xtraceId) {
+        this.xtraceId = xtraceId;
     }
 
     public String getTenantId() {

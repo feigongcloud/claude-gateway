@@ -82,6 +82,14 @@ public class UpstreamClient {
                     // Capture status code for usage tracking
                     usageContext.setStatusCode(status.value());
 
+                    // Extract x-trace-id from upstream response headers
+                    String xtraceId = headers.getFirst("x-trace-id");
+                    if (xtraceId != null && !xtraceId.isEmpty()) {
+                        usageContext.setXtraceId(xtraceId);
+                        log.debug("[UPSTREAM] Captured x-trace-id: requestId={}, xtraceId={}",
+                                usageContext.getRequestId(), xtraceId);
+                    }
+
                     // Set response status
                     response.setStatusCode(status);
 
